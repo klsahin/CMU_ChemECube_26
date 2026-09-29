@@ -12,11 +12,11 @@
 #define PUMP1_PIN        3   // Pump 1 Driver Pin
 #define PUMP2_PIN        4   // Pump 2 Driver Pin
 
-#define TCAADDR          0x70 // Default TCA9548A Multiplexer I2C Address
 #define SEALEVELPRESSURE_HPA (1013.25)
 
-// --- Global Sensor Instance ---
-Adafruit_BME280 bme; 
+// --- Dual Sensor Instances ---
+Adafruit_BME280 bme0; // Primary Sensor  (Address 0x76)
+Adafruit_BME280 bme1; // Secondary Sensor (Address 0x77)
 
 // --- Thresholds & Timers ---
 const float h_threshold = 70.0;     // % Relative Humidity limit
@@ -28,18 +28,10 @@ const unsigned long pressure_wait_time = 10UL * 60UL * 1000UL; // 10 minutes in 
 bool pressure_safe = true;
 unsigned long delayTime = 1000;     // 1 second main loop delay
 
-// Helper function to switch channels on TCA9548A Multiplexer
-void tcaSelect(uint8_t i) {
-    if (i > 7) return;
-    Wire.beginTransmission(TCAADDR);
-    Wire.write(1 << i);
-    Wire.endTransmission();
-}
-
 void setup() {
     Serial.begin(9600);
     while (!Serial); // Wait for Serial console connection
-    Serial.println(F("3x BME280 Pump & Sensor Controller Test"));
+    Serial.println(F("Dual BME280 Pump & Sensor Controller Test"));
 
     // Configure Indicator LEDs
     pinMode(LED_POWER, OUTPUT);
@@ -60,19 +52,19 @@ void setup() {
     digitalWrite(PUMP1_PIN, LOW);
     digitalWrite(PUMP2_PIN, LOW);
 
-    Wire.begin();
-
-    // Initialize all 3 BME280 Sensors via Multiplexer channels 0, 1, and 2
-    for (uint8_t channel = 0; channel < 3; channel++) {
-        tcaSelect(channel);
-        if (!bme.begin(0x76)) { 
-            Serial.print(F("Error: Could not find BME280 sensor on channel "));
-            Serial.println(channel);
-            while (1); // Halt execution on missing sensor
-        }
+    // Initialize Sensor 0 (0x76)
+    if (!bme0.begin(0x76)) {
+        Serial.println(F("Error: Could not find Sensor 0 at address 0x76!"));
+        while (1); // Halt execution
     }
 
-    Serial.println(F("Setup Complete. All 3 Sensors Ready."));
+    // Initialize Sensor 1 (0x77)
+    if (!bme1.begin(0x77)) {
+        Serial.println(F("Error: Could not find Sensor 1 at address 0x77!"));
+        while (1); // Halt execution
+    }
+
+    Serial.println(F("Setup Complete. Both Sensors Ready."));
 }
 
 void loop() {
@@ -104,12 +96,11 @@ void loop() {
         return;
     }
 
-    // 3. Read Pressure across all 3 sensors (OR Logic Check)
-    tcaSelect(0); float p0 = bme.readPressure();
-    tcaSelect(1); float p1 = bme.readPressure();
-    tcaSelect(2); float p2 = bme.readPressure();
+    // 3. Read Pressure across both sensors (OR Logic Check)
+    float p0 = bme0.readPressure();
+    float p1 = bme1.readPressure();
 
-    bool high_pressure_detected = (p0 > p_threshold) || (p1 > p_threshold) || (p2 > p_threshold);
+    bool high_pressure_detected = (p0 > p_threshold) || (p1 > p_threshold);
 
     // 4. Over-Pressure Monitoring & 10-Minute Lockout
     if (high_pressure_detected) {
@@ -124,22 +115,21 @@ void loop() {
 
             delay(500);
 
-            // Re-read all 3 sensors
-            tcaSelect(0); p0 = bme.readPressure();
-            tcaSelect(1); p1 = bme.readPressure();
-            tcaSelect(2); p2 = bme.readPressure();
-            high_pressure_detected = (p0 > p_threshold) || (p1 > p_threshold) || (p2 > p_threshold);
+            // Re-read both sensors
+            p0 = bme0.readPressure();
+            p1 = bme1.readPressure();
+            high_pressure_detected = (p0 > p_threshold) || (p1 > p_threshold);
 
             // Check if high-pressure condition has persisted for > 10 minutes
             if ((millis() - pressure_time) > pressure_wait_time) {
-                Serial.println(F("ERROR: HIGH PRESSURE PERSISTED ON SENSOR(S) FOR 10 MINUTES! LOCKOUT TRIPPED."));
+                Serial.println(F("ERROR: HIGH PRESSURE PERSISTED FOR 10 MINUTES! LOCKOUT TRIPPED."));
                 pressure_safe = false;
                 digitalWrite(PUMP1_PIN, LOW);
                 digitalWrite(PUMP2_PIN, LOW);
                 return;
             }
         }
-        // Pressure returned to safe levels across all sensors before timeout
+        // Pressure returned to safe levels across both sensors before timeout
         digitalWrite(LED_PRESSURE, LOW);
     }
 
@@ -147,10 +137,9 @@ void loop() {
     digitalWrite(PUMP1_PIN, HIGH);
     digitalWrite(PUMP2_PIN, HIGH);
 
-    // 6. Read Primary Sensor (Channel 0) for Humidity and Temperature Checks
-    tcaSelect(0);
-    float temp = bme.readTemperature();
-    float humidity = bme.readHumidity();
+    // 6. Read Primary Sensor (bme0) for Humidity and Temperature Checks
+    float temp = bme0.readTemperature();
+    float humidity = bme0.readHumidity();
 
     // Humidity Threshold Evaluation
     if (humidity > h_threshold) {
@@ -167,19 +156,18 @@ void loop() {
     }
 
     // Output Telemetry to Serial Monitor
-    readSensors(p0, p1, p2, temp, humidity);
+    readSensors(p0, p1, temp, humidity);
 
     delay(delayTime);
 }
 
 // Helper Function for Console Telemetry
-void readSensors(float p0, float p1, float p2, float temp, float humidity) {
+void readSensors(float p0, float p1, float temp, float humidity) {
     Serial.print(F("Temp (S0): ")); Serial.print(temp); Serial.print(F(" °C | "));
     Serial.print(F("Humidity (S0): ")); Serial.print(humidity); Serial.println(F(" %"));
 
     Serial.print(F("Pressure S0: ")); Serial.print(p0 / 100.0F); Serial.print(F(" hPa | "));
-    Serial.print(F("S1: ")); Serial.print(p1 / 100.0F); Serial.print(F(" hPa | "));
-    Serial.print(F("S2: ")); Serial.print(p2 / 100.0F); Serial.println(F(" hPa"));
+    Serial.print(F("S1: ")); Serial.print(p1 / 100.0F); Serial.println(F(" hPa"));
 
     Serial.println();
 }
